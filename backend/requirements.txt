@@ -1,0 +1,35 @@
+# Core dependencies
+langchain==0.1.9
+langchain-openai==0.0.8
+langchain-community==0.0.24
+langchain-core==0.1.53
+
+# LLM and embeddings
+openai==1.55.3
+
+# Database
+sqlalchemy==2.0.44
+
+# Date parsing
+dateparser==1.2.0
+python-dateutil==2.8.2
+
+# NLP and NER
+spacy==3.7.2
+transformers==4.36.2
+torch==2.1.2
+
+# Utilities
+pydantic==2.12.3
+pydantic_core==2.41.4
+python-dotenv==1.0.1
+rich==13.7.0
+
+# Optional for better results
+sentence-transformers==2.2.2
+
+
+
+
+
+tiktoken==0.12.0
