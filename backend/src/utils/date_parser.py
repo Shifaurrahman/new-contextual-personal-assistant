@@ -27,13 +27,46 @@ class DateParser:
         if not text:
             return None
         
+        # First, try to extract specific time patterns (HH:MM format)
+        time_match = re.search(r'(\d{1,2})[:\.](\d{2})\s*(a\.?m\.?|p\.?m\.?|am|pm)?', text, re.IGNORECASE)
+        extracted_time = None
+        
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2))
+            meridiem = time_match.group(3)
+            
+            # Handle AM/PM
+            if meridiem:
+                meridiem = meridiem.lower().replace('.', '')
+                if meridiem in ['pm', 'p.m'] and hour != 12:
+                    hour += 12
+                elif meridiem in ['am', 'a.m'] and hour == 12:
+                    hour = 0
+            
+            extracted_time = (hour, minute)
+        
         # Try dateparser first (handles most natural language)
         parsed_date = dateparser.parse(text, settings=self.settings)
+        
+        # If we found a specific time, update the parsed date
+        if parsed_date and extracted_time:
+            hour, minute = extracted_time
+            parsed_date = parsed_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            return parsed_date
+        
         if parsed_date:
             return parsed_date
         
         # Try specific patterns
         parsed_date = self._parse_relative_dates(text)
+        
+        # Apply extracted time if we found one
+        if parsed_date and extracted_time:
+            hour, minute = extracted_time
+            parsed_date = parsed_date.replace(hour=hour, minute=minute, second=0, microsecond=0)
+            return parsed_date
+        
         if parsed_date:
             return parsed_date
         

@@ -69,17 +69,35 @@ class EntityExtractor:
         if entities['persons']:
             return entities['persons'][0]
         
+        # Look for team patterns (improved)
+        team_patterns = [
+            r'(?:with|to|for)\s+(?:the\s+)?(\w+(?:\s+\w+)?)\s+team',
+            r'(?:with|to|for)\s+team\s+(\w+)',
+            r'(\w+)\s+team\s+(?:to|will|should)',
+        ]
+        
+        for pattern in team_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                team_name = match.group(1).strip()
+                # Don't return single-letter or very short matches
+                if len(team_name) > 2:
+                    return f"{team_name} team"
+        
         # Look for action patterns
         action_patterns = [
-            r'(?:ask|tell|contact|call|email|message)\s+(\w+)',
-            r'(?:with|to)\s+(?:the\s+)?(\w+(?:\s+\w+)?)\s+team',
+            r'(?:ask|tell|contact|call|email|message|meet|schedule.*with)\s+(\w+)',
             r'assigned?\s+to\s+(\w+)',
         ]
         
         for pattern in action_patterns:
             match = re.search(pattern, text, re.IGNORECASE)
             if match:
-                return match.group(1)
+                name = match.group(1)
+                # Don't return common words
+                common_words = ['the', 'a', 'an', 'with', 'for', 'to', 'by']
+                if name.lower() not in common_words and len(name) > 2:
+                    return name
         
         return None
     
@@ -154,30 +172,60 @@ class EntityExtractor:
         """
         text_lower = text.lower()
         
-        # Task indicators
-        task_keywords = [
-            'call', 'email', 'send', 'write', 'create', 'build',
-            'finish', 'complete', 'do', 'make', 'schedule', 'book',
-            'buy', 'order', 'prepare', 'review', 'check', 'update'
-        ]
-        if any(text_lower.startswith(keyword) for keyword in task_keywords):
-            return 'task'
-        
-        # Reminder indicators
+        # Reminder indicators (check first - most specific)
         reminder_keywords = [
-            'remind', 'remember', 'don\'t forget', 'pick up',
-            'bring', 'take', 'grab'
+            'remind', 'remember', "don't forget", 'pick up',
+            'bring', 'take', 'grab', 'pickup'
         ]
         if any(keyword in text_lower for keyword in reminder_keywords):
             return 'reminder'
         
-        # Idea indicators
+        # Idea indicators (check second)
         idea_keywords = [
-            'idea', 'concept', 'thought', 'what if', 'maybe we could',
-            'we should', 'consider', 'brainstorm'
+            'idea:', 'idea for', 'concept', 'thought about', 'what if', 
+            'maybe we could', 'we should', 'consider', 'brainstorm',
+            'suggestion', 'propose', 'potential'
         ]
         if any(keyword in text_lower for keyword in idea_keywords):
             return 'idea'
+        
+        # Task indicators (check third - has action verbs)
+        task_patterns = [
+            # Action verbs at start
+            r'^(call|email|send|write|create|build|finish|complete|do|make|schedule|book|buy|order|prepare|review|check|update|contact|meet|discuss|plan|organize|setup|arrange|coordinate)',
+            # "Need to" pattern
+            r'(need to|have to|must|should|got to)',
+            # "To do" pattern
+            r'(to do|todo|task:)',
+            # Future tense with action
+            r'(will|going to).*(call|send|write|create|review|check|meet|discuss)'
+        ]
+        
+        for pattern in task_patterns:
+            if re.search(pattern, text_lower):
+                return 'task'
+        
+        # Check for action verbs anywhere in text (weaker signal)
+        action_verbs = [
+            'conduct', 'perform', 'execute', 'implement', 'deliver',
+            'submit', 'present', 'analyze', 'research', 'investigate',
+            'develop', 'design', 'test', 'validate', 'approve'
+        ]
+        
+        # If text has action verb + time/deadline, it's likely a task
+        has_action = any(verb in text_lower for verb in action_verbs)
+        has_time = any(word in text_lower for word in [
+            'today', 'tomorrow', 'next', 'by', 'before', 'after',
+            'monday', 'tuesday', 'wednesday', 'thursday', 'friday',
+            'this week', 'next week', 'deadline', 'due'
+        ])
+        
+        if has_action and has_time:
+            return 'task'
+        
+        # If has action verb but no time, still likely a task
+        if has_action:
+            return 'task'
         
         # Default to note
         return 'note'
