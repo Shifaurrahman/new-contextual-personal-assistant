@@ -22,6 +22,7 @@ class IngestionAgent:
         self.card_service = CardService(db)
         self.envelope_service = EnvelopeService(db)
         self.context_service = ContextService(db)
+        self.entity_extractor = entity_extractor  # Add entity extractor reference
         
         # Initialize LLM
         self.llm = ChatOpenAI(
@@ -43,7 +44,14 @@ class IngestionAgent:
 
 Your task is to analyze the user's input and extract the following information:
 
-1. **Card Type**: Classify as 'task', 'reminder', 'idea', or 'note'
+1. **Card Type**: Classify carefully:
+   - 'task': Action items with clear objectives. Look for action verbs (call, send, create, conduct, plan, review, etc.)
+   - 'reminder': Time-based alerts with "remind", "remember", "don't forget", "pick up"
+   - 'idea': Creative concepts, suggestions, brainstorms with "idea", "what if", "maybe", "consider"
+   - 'note': General information without clear action (observations, facts, references)
+   
+   IMPORTANT: If the text has an action verb (conduct, plan, create, etc.) it's likely a TASK, not a note!
+
 2. **Description**: Clean, clear description of the action or idea
 3. **Date**: Parse any date/time mentioned (use parse_date tool)
 4. **Assignee**: Extract person or team assigned (use extract_assignee tool)
@@ -57,10 +65,12 @@ Available tools:
 - parse_date: Parse natural language dates
 - extract_entities: Extract named entities
 - extract_assignee: Find assigned person/team
-- classify_card_type: Determine card type
+- classify_card_type: Determine card type (ALWAYS USE THIS FIRST!)
 - classify_priority: Determine priority level
 - extract_keywords: Extract keywords
 - extract_project_context: Find project/context
+
+CRITICAL: Always use classify_card_type tool to determine the correct type. Don't assume everything is a note!
 
 Always use tools to ensure accurate extraction. Return final result as JSON with keys:
 card_type, description, date, assignee, priority, keywords, project_context"""
@@ -239,6 +249,7 @@ Return the information in JSON format."""
         
         keywords = extracted_info['keywords']
         project_contexts = extracted_info.get('project_context', [])
+        description = extracted_info.get('description', '')
         
         # First, try to find existing envelope by project context
         if project_contexts:
@@ -256,14 +267,70 @@ Return the information in JSON format."""
                 print(f"📁 Matched to envelope: {envelope.name}")
                 return envelope
         
-        # Create new envelope if project context is identified
+        # Check if we should create a new envelope based on content
+        # Create envelope if:
+        # 1. Project context is explicitly mentioned
+        # 2. Multiple meaningful keywords suggest a theme
+        # 3. Description contains potential project identifiers
+        
+        should_create_envelope = False
+        envelope_name = None
+        envelope_type = 'theme'
+        
+        # Strategy 1: Explicit project context
         if project_contexts:
-            context_name = project_contexts[0]
-            print(f"📁 Creating new envelope: {context_name}")
+            should_create_envelope = True
+            envelope_name = project_contexts[0]
+            envelope_type = 'project'
+        
+        # Strategy 2: Extract potential project/theme from keywords
+        elif len(keywords) >= 3:
+            # Look for noun phrases that could be projects
+            significant_keywords = [k for k in keywords if len(k) > 4]
+            
+            if len(significant_keywords) >= 2:
+                # Check for common project-related terms
+                project_indicators = ['project', 'initiative', 'campaign', 'program', 'plan']
+                desc_lower = description.lower()
+                
+                for indicator in project_indicators:
+                    if indicator in desc_lower:
+                        # Extract words near the indicator
+                        words = description.split()
+                        for i, word in enumerate(words):
+                            if indicator in word.lower() and i + 1 < len(words):
+                                next_word = words[i + 1]
+                                if next_word[0].isupper() or len(next_word) > 3:
+                                    envelope_name = f"{next_word.capitalize()} {indicator.capitalize()}"
+                                    should_create_envelope = True
+                                    envelope_type = 'project'
+                                    break
+                        if should_create_envelope:
+                            break
+                
+                # If no explicit indicator, create theme-based envelope
+                if not should_create_envelope and significant_keywords:
+                    # Use most significant keyword as theme
+                    envelope_name = significant_keywords[0].capitalize()
+                    should_create_envelope = True
+                    envelope_type = 'theme'
+        
+        # Strategy 3: Check for company/organization names
+        if not should_create_envelope:
+            entities = self.entity_extractor.extract_entities(description)
+            if entities.get('organizations'):
+                envelope_name = entities['organizations'][0]
+                should_create_envelope = True
+                envelope_type = 'company'
+        
+        # Create envelope if conditions are met
+        if should_create_envelope and envelope_name:
+            print(f"📁 Creating new envelope: {envelope_name} (type: {envelope_type})")
             return self.envelope_service.create_envelope(
-                name=context_name,
-                envelope_type='project',
-                keywords=keywords
+                name=envelope_name,
+                envelope_type=envelope_type,
+                keywords=keywords,
+                description=f"Auto-created for: {description[:100]}"
             )
         
         # No envelope needed

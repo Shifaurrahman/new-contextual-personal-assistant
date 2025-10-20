@@ -37,6 +37,12 @@ st.markdown("""
     h1 {
         color: #1f77b4;
     }
+    .due-date-box {
+        background-color: #e8f4f8;
+        padding: 10px;
+        border-radius: 8px;
+        border-left: 4px solid #0066cc;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -72,6 +78,16 @@ def format_date(date_str):
     try:
         dt = datetime.fromisoformat(date_str)
         return dt.strftime("%b %d, %Y %I:%M %p")
+    except:
+        return date_str
+
+def format_date_short(date_str):
+    """Format date string to short format (for display)"""
+    if not date_str:
+        return "No date"
+    try:
+        dt = datetime.fromisoformat(date_str)
+        return dt.strftime("%b %d, %Y")
     except:
         return date_str
 
@@ -126,7 +142,21 @@ if page == "Dashboard":
         
         st.markdown("---")
         
+        # Cards breakdown
+        st.subheader("📋 Cards Breakdown")
+        cards_by_type = stats['cards_by_type']
         
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("✅ Tasks", cards_by_type.get('tasks', 0))
+        with col2:
+            st.metric("⏰ Reminders", cards_by_type.get('reminders', 0))
+        with col3:
+            st.metric("💡 Ideas", cards_by_type.get('ideas', 0))
+        with col4:
+            st.metric("📝 Notes", cards_by_type.get('notes', 0))
+        
+        st.markdown("---")
         
         # Recent activity
         st.subheader("📌 Recent Cards")
@@ -138,13 +168,16 @@ if page == "Dashboard":
                     col1, col2, col3 = st.columns([3, 1, 1])
                     
                     with col1:
-                        st.markdown(f"**{get_type_emoji(card['card_type'])} {card['description'][:80]}...**")
+                        desc_preview = card['description'][:80] + "..." if len(card['description']) > 80 else card['description']
+                        st.markdown(f"**{get_type_emoji(card['card_type'])} {desc_preview}**")
                     with col2:
                         st.markdown(f"<span style='color: {get_priority_color(card['priority'])}'>{card['priority'].upper()}</span>", unsafe_allow_html=True)
                     with col3:
-                        st.caption(format_date(card['date']))
+                        st.caption(format_date_short(card['date']))
                     
                     st.markdown("---")
+        else:
+            st.info("No cards yet. Start by adding a note!")
 
 # ==================== ADD NOTE PAGE ====================
 elif page == "Add Note":
@@ -162,7 +195,7 @@ elif page == "Add Note":
         note_text = st.text_area(
             "Your Note",
             height=150,
-            placeholder="e.g., 'Call Sarah about Q3 budget next Monday' or 'Reminder: pick up milk tomorrow'"
+            placeholder="e.g., 'Schedule meeting with development team next Wednesday at 10:30 AM' or 'Reminder: pick up milk tomorrow'"
         )
         
         col1, col2 = st.columns([1, 4])
@@ -189,12 +222,20 @@ elif page == "Add Note":
                     
                     with col2:
                         st.metric("Assignee", card.get('assignee') or "None")
-                        st.metric("Date", format_date(card.get('date')))
+                        if card.get('date'):
+                            st.markdown("**📅 Due Date**")
+                            st.info(format_date(card.get('date')))
+                        else:
+                            st.metric("Date", "No date set")
                     
                     with col3:
                         envelope = result.get('envelope')
                         st.metric("Envelope", envelope['name'] if envelope else "None")
                         st.metric("Keywords", len(card.get('context_keywords', [])))
+                    
+                    # Show keywords
+                    if card.get('context_keywords'):
+                        st.write("**🏷️ Keywords:**", ", ".join(card['context_keywords']))
                     
                     # Show full card details
                     with st.expander("View Full Details"):
@@ -279,7 +320,11 @@ elif page == "View Cards":
                     st.markdown(f"<div style='background-color: {get_priority_color(card['priority'])}; color: white; padding: 5px 10px; border-radius: 5px; text-align: center;'>{card['priority'].upper()}</div>", unsafe_allow_html=True)
                 
                 with col3:
-                    st.caption(format_date(card['date']))
+                    if card['date']:
+                        st.markdown("**📅 Due Date**")
+                        st.markdown(f"<div class='due-date-box'>{format_date(card['date'])}</div>", unsafe_allow_html=True)
+                    else:
+                        st.caption("No due date")
                 
                 with col4:
                     if card['status'] == 'active':
@@ -288,67 +333,118 @@ elif page == "View Cards":
                             st.success("Marked as complete!")
                             st.rerun()
                     else:
-                        st.caption("✓ Completed")
+                        st.markdown("✅ **Done**")
                 
-                with st.expander("Details"):
+                with st.expander("📄 Details & Metadata"):
                     col1, col2 = st.columns(2)
                     with col1:
-                        st.write("**Raw Input:**", card.get('raw_input', 'N/A'))
-                        st.write("**Created:**", format_date(card['created_at']))
-                    with col2:
-                        st.write("**Envelope ID:**", card.get('envelope_id', 'None'))
-                        st.write("**Updated:**", format_date(card['updated_at']))
+                        st.write("**📝 Original Note:**")
+                        st.info(card.get('raw_input', 'N/A'))
+                        
+                        if card.get('envelope_id'):
+                            st.write("**📁 Envelope:**", f"ID {card['envelope_id']}")
+                        else:
+                            st.write("**📁 Envelope:**", "None")
+                        
+                        # Priority update
+                        st.write("**🎯 Update Priority:**")
+                        new_priority = st.selectbox(
+                            "Change priority",
+                            ["low", "medium", "high", "urgent"],
+                            index=["low", "medium", "high", "urgent"].index(card['priority']),
+                            key=f"priority_{card['id']}"
+                        )
+                        if new_priority != card['priority']:
+                            if st.button("💾 Save Priority", key=f"save_priority_{card['id']}"):
+                                make_api_request(
+                                    f"/cards/{card['id']}", 
+                                    "PUT", 
+                                    {"priority": new_priority}
+                                )
+                                st.success(f"Priority updated to {new_priority}!")
+                                st.rerun()
                     
-                    if st.button("🗑️ Delete", key=f"delete_{card['id']}"):
-                        make_api_request(f"/cards/{card['id']}", "DELETE")
-                        st.success("Card deleted!")
-                        st.rerun()
+                    with col2:
+                        st.write("**📊 Metadata:**")
+                        st.caption(f"🆔 Card ID: {card['id']}")
+                        st.caption(f"📅 Created: {format_date(card['created_at'])}")
+                        st.caption(f"🔄 Last updated: {format_date(card['updated_at'])}")
+                        st.caption(f"📌 Status: {card['status']}")
+                    
+                    st.markdown("---")
+                    col1, col2 = st.columns([1, 4])
+                    with col1:
+                        if st.button("🗑️ Delete", key=f"delete_{card['id']}", type="secondary"):
+                            if st.button(f"⚠️ Confirm Delete?", key=f"confirm_delete_{card['id']}"):
+                                make_api_request(f"/cards/{card['id']}", "DELETE")
+                                st.success("Card deleted!")
+                                st.rerun()
                 
                 st.markdown("---")
     else:
-        st.info("No cards found.")
+        st.info("No cards found. Try adjusting your filters or add some notes!")
 
 # ==================== ENVELOPES PAGE ====================
 elif page == "Envelopes":
     st.title("📁 Envelopes")
     
+    st.markdown("Envelopes group related cards together by project, theme, or context.")
+    
     envelopes = make_api_request("/envelopes")
     
     if envelopes:
+        # Summary metrics
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Envelopes", len(envelopes))
+        with col2:
+            total_cards = sum(e['card_count'] for e in envelopes)
+            st.metric("Total Cards in Envelopes", total_cards)
+        with col3:
+            avg_cards = total_cards / len(envelopes) if envelopes else 0
+            st.metric("Average Cards per Envelope", f"{avg_cards:.1f}")
+        
+        st.markdown("---")
+        
         for envelope in envelopes:
-            with st.expander(f"📁 {envelope['name']} ({envelope['card_count']} cards)"):
+            with st.expander(f"📁 {envelope['name']} ({envelope['card_count']} cards)", expanded=False):
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.write("**Type:**", envelope.get('envelope_type', 'N/A'))
-                    st.write("**Description:**", envelope.get('description', 'N/A'))
+                    st.write("**📂 Type:**", envelope.get('envelope_type', 'N/A').title())
+                    st.write("**📝 Description:**", envelope.get('description', 'N/A'))
                 
                 with col2:
-                    st.write("**Keywords:**", ", ".join(envelope.get('keywords', [])))
-                    st.write("**Created:**", format_date(envelope['created_at']))
+                    if envelope.get('keywords'):
+                        st.write("**🏷️ Keywords:**", ", ".join(envelope.get('keywords', [])))
+                    st.write("**📅 Created:**", format_date_short(envelope['created_at']))
                 
                 # Get statistics
                 stats = make_api_request(f"/envelopes/{envelope['id']}/statistics")
                 if stats:
-                    st.subheader("Statistics")
+                    st.subheader("📊 Statistics")
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("Tasks", stats['tasks'])
+                        st.metric("✅ Tasks", stats['tasks'])
                     with col2:
-                        st.metric("Ideas", stats['ideas'])
+                        st.metric("💡 Ideas", stats['ideas'])
                     with col3:
-                        st.metric("Active", stats['active'])
+                        st.metric("🟢 Active", stats['active'])
                     with col4:
-                        st.metric("Completed", stats['completed'])
+                        st.metric("✓ Completed", stats['completed'])
                 
                 # Show cards in envelope
-                if st.button(f"View Cards", key=f"view_env_{envelope['id']}"):
-                    cards = make_api_request(f"/envelopes/{envelope['id']}/cards")
-                    if cards:
-                        for card in cards:
-                            st.markdown(f"- {get_type_emoji(card['card_type'])} {card['description']}")
+                cards = make_api_request(f"/envelopes/{envelope['id']}/cards")
+                if cards:
+                    st.subheader("📋 Cards in this Envelope")
+                    for card in cards:
+                        col1, col2 = st.columns([4, 1])
+                        with col1:
+                            st.markdown(f"- {get_type_emoji(card['card_type'])} **{card['description']}**")
+                        with col2:
+                            st.caption(f"{card['priority'].upper()}")
     else:
-        st.info("No envelopes found.")
+        st.info("No envelopes created yet. Add notes with project context to create envelopes automatically!")
 
 # ==================== THINKING AGENT PAGE ====================
 elif page == "Thinking Agent":
@@ -356,17 +452,17 @@ elif page == "Thinking Agent":
     
     st.markdown("""
     The Thinking Agent analyzes your cards and provides:
-    - Next step suggestions
-    - Conflict detection (overlapping deadlines)
-    - Reorganization recommendations
-    - Pattern insights
+    - **Next step suggestions** based on completed tasks
+    - **Conflict detection** for overlapping deadlines
+    - **Reorganization recommendations** for better structure
+    - **Pattern insights** from your work habits
     """)
     
     col1, col2 = st.columns([1, 3])
     
     with col1:
         if st.button("🚀 Run Analysis", type="primary"):
-            with st.spinner("Analyzing..."):
+            with st.spinner("🤔 Analyzing your cards..."):
                 result = make_api_request("/thinking/analyze", "POST")
                 if result:
                     st.success(f"✅ Generated {result['total']} suggestions!")
@@ -380,6 +476,22 @@ elif page == "Thinking Agent":
     suggestions = make_api_request("/thinking/suggestions")
     
     if suggestions:
+        # Group by type
+        next_steps = [s for s in suggestions if s['output_type'] == 'next_step']
+        conflicts = [s for s in suggestions if s['output_type'] == 'conflict']
+        recommendations = [s for s in suggestions if s['output_type'] == 'recommendation']
+        
+        # Show counts
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("➡️ Next Steps", len(next_steps))
+        with col2:
+            st.metric("⚠️ Conflicts", len(conflicts))
+        with col3:
+            st.metric("💡 Recommendations", len(recommendations))
+        
+        st.markdown("---")
+        
         for suggestion in suggestions:
             icon_map = {
                 "next_step": "➡️",
@@ -387,15 +499,22 @@ elif page == "Thinking Agent":
                 "recommendation": "💡"
             }
             
+            color_map = {
+                "next_step": "#3498db",
+                "conflict": "#e74c3c",
+                "recommendation": "#9b59b6"
+            }
+            
             icon = icon_map.get(suggestion['output_type'], "ℹ️")
+            color = color_map.get(suggestion['output_type'], "#95a5a6")
             
             with st.container():
                 col1, col2 = st.columns([4, 1])
                 
                 with col1:
-                    st.markdown(f"### {icon} {suggestion['title']}")
+                    st.markdown(f"<div style='border-left: 4px solid {color}; padding-left: 15px;'><h3>{icon} {suggestion['title']}</h3></div>", unsafe_allow_html=True)
                     st.write(suggestion['description'])
-                    st.caption(f"Priority: {suggestion['priority']} | Created: {format_date(suggestion['created_at'])}")
+                    st.caption(f"Priority: **{suggestion['priority'].upper()}** | Created: {format_date(suggestion['created_at'])}")
                 
                 with col2:
                     if suggestion['status'] == 'pending':
@@ -403,37 +522,50 @@ elif page == "Thinking Agent":
                             make_api_request(f"/thinking/suggestions/{suggestion['id']}/acknowledge", "PATCH")
                             st.success("Acknowledged!")
                             st.rerun()
+                    else:
+                        st.caption("✓ Acknowledged")
                 
                 st.markdown("---")
     else:
-        st.info("No suggestions available. Run analysis to generate suggestions.")
+        st.info("No suggestions available. Click 'Run Analysis' to generate suggestions based on your cards.")
 
 # ==================== SETTINGS PAGE ====================
 elif page == "Settings":
     st.title("⚙️ Settings")
     
-    st.subheader("API Configuration")
-    st.text_input("API URL", value=API_URL, disabled=True)
+    st.subheader("🔗 API Configuration")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.text_input("API URL", value=API_URL, disabled=True)
+    with col2:
+        # Test API connection
+        if st.button("🔍 Test Connection"):
+            health = make_api_request("/health")
+            if health:
+                st.success("✅ API is running!")
+            else:
+                st.error("❌ Cannot connect to API")
     
     st.markdown("---")
     
-    st.subheader("Database")
+    st.subheader("💾 Database")
     col1, col2 = st.columns(2)
     
     with col1:
         if st.button("🔄 Refresh Data"):
             st.session_state.refresh += 1
             st.success("Data refreshed!")
+            st.rerun()
     
     with col2:
-        if st.button("📊 View Stats"):
+        if st.button("📊 View Full Stats"):
             stats = make_api_request("/statistics/dashboard")
             if stats:
                 st.json(stats)
     
     st.markdown("---")
     
-    st.subheader("Context Summary")
+    st.subheader("🧠 Context Summary")
     context_summary = make_api_request("/context/summary")
     
     if context_summary:
@@ -446,11 +578,21 @@ elif page == "Settings":
             st.metric("Key People", context_summary['key_people'])
         
         if context_summary.get('by_type'):
-            st.write("**By Type:**")
+            st.write("**📊 By Type:**")
             for ctx_type, count in context_summary['by_type'].items():
-                st.write(f"- {ctx_type}: {count}")
+                st.write(f"- **{ctx_type.title()}:** {count}")
+        
+        # Show top contexts
+        if context_summary.get('top_contexts'):
+            st.markdown("---")
+            st.write("**⭐ Top Contexts:**")
+            for ctx in context_summary['top_contexts'][:5]:
+                st.write(f"- **{ctx['name']}** ({ctx['context_type']}) - Importance: {ctx['importance_score']}/10")
+    else:
+        st.info("No context data available yet.")
 
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.caption("🤖 Contextual Personal Assistant v1.0")
 st.sidebar.caption("Powered by LangChain & OpenAI")
+st.sidebar.caption(f"🔄 Refresh count: {st.session_state.refresh}")
