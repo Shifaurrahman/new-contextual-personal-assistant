@@ -74,27 +74,44 @@ class ThinkingAgent:
             if card.envelope_id:
                 envelope_cards[card.envelope_id].append(card)
         
+        # Also check cards without envelopes
+        unassigned_cards = [c for c in cards if not c.envelope_id]
+        if len(unassigned_cards) > 0:
+            envelope_cards[None] = unassigned_cards
+        
         # Analyze each envelope
         for envelope_id, envelope_card_list in envelope_cards.items():
-            envelope = self.envelope_service.get_envelope(envelope_id)
-            if not envelope:
-                continue
+            if envelope_id:
+                envelope = self.envelope_service.get_envelope(envelope_id)
+                envelope_name = envelope.name if envelope else f"Envelope {envelope_id}"
+            else:
+                envelope_name = "Unorganized"
             
             # Check for completed tasks
             completed = [c for c in envelope_card_list if c.status == "completed"]
             active = [c for c in envelope_card_list if c.status == "active"]
             
-            if completed and active:
-                # Suggest working on next task
+            # Suggest next task if there are active tasks (even without completed ones)
+            if active:
                 next_task = self._find_next_logical_task(active, completed)
                 if next_task:
-                    suggestions.append({
-                        'output_type': 'next_step',
-                        'title': f"Next Step in {envelope.name}",
-                        'description': f"You've completed {len(completed)} task(s) in {envelope.name}. Consider working on: {next_task.description}",
-                        'related_card_ids': [next_task.id] + [c.id for c in completed[-2:]],
-                        'priority': 'medium'
-                    })
+                    if completed:
+                        suggestions.append({
+                            'output_type': 'next_step',
+                            'title': f"Next Step in {envelope_name}",
+                            'description': f"You've completed {len(completed)} task(s) in {envelope_name}. Consider working on: {next_task.description}",
+                            'related_card_ids': [next_task.id] + [c.id for c in completed[-2:]],
+                            'priority': 'medium'
+                        })
+                    else:
+                        # Suggest starting with highest priority task
+                        suggestions.append({
+                            'output_type': 'next_step',
+                            'title': f"Start Working on {envelope_name}",
+                            'description': f"You have {len(active)} active task(s) in {envelope_name}. Start with: {next_task.description}",
+                            'related_card_ids': [next_task.id],
+                            'priority': 'low'
+                        })
         
         return suggestions
     
@@ -131,15 +148,34 @@ class ThinkingAgent:
         
         # Check for overdue tasks
         now = datetime.utcnow()
-        overdue = [c for c in cards if c.card_type == "task" and c.date and c.date < now]
+        overdue = [c for c in cards if c.card_type == "task" and c.date and c.date < now and c.status == "active"]
         
-        if len(overdue) > 3:
+        if len(overdue) > 0:
             suggestions.append({
                 'output_type': 'conflict',
-                'title': f"{len(overdue)} Overdue Tasks",
-                'description': f"You have {len(overdue)} overdue tasks. Consider reviewing and updating their status or deadlines.",
+                'title': f"{len(overdue)} Overdue Task{'s' if len(overdue) > 1 else ''}",
+                'description': f"You have {len(overdue)} overdue task{'s' if len(overdue) > 1 else ''}. Consider reviewing and updating their status or deadlines.",
                 'related_card_ids': [t.id for t in overdue[:5]],
-                'priority': 'urgent'
+                'priority': 'urgent' if len(overdue) > 5 else 'high'
+            })
+        
+        # Check for upcoming deadlines (within 48 hours)
+        upcoming_deadline = now + timedelta(hours=48)
+        upcoming = [
+            c for c in cards 
+            if c.card_type == "task" 
+            and c.date 
+            and now < c.date < upcoming_deadline
+            and c.status == "active"
+        ]
+        
+        if len(upcoming) > 0:
+            suggestions.append({
+                'output_type': 'conflict',
+                'title': f"{len(upcoming)} Task{'s' if len(upcoming) > 1 else ''} Due Soon",
+                'description': f"You have {len(upcoming)} task{'s' if len(upcoming) > 1 else ''} due within the next 48 hours. Make sure you're prepared!",
+                'related_card_ids': [t.id for t in upcoming],
+                'priority': 'high'
             })
         
         return suggestions
@@ -155,31 +191,39 @@ class ThinkingAgent:
         # Find unorganized cards (no envelope)
         unorganized = [c for c in cards if not c.envelope_id]
         
-        if len(unorganized) > 5:
+        if len(unorganized) > 3:
             # Analyze keywords to find common themes
             keyword_frequency = defaultdict(int)
             for card in unorganized:
                 for keyword in card.context_keywords:
                     keyword_frequency[keyword] += 1
             
-            # Find common keywords
+            # Find common keywords (appear in at least 2 cards)
             common_keywords = [
                 kw for kw, freq in keyword_frequency.items() 
-                if freq >= 3
+                if freq >= 2
             ]
             
             if common_keywords:
                 suggestions.append({
                     'output_type': 'recommendation',
-                    'title': "Create New Envelope",
-                    'description': f"You have {len(unorganized)} unorganized cards with common themes: {', '.join(common_keywords[:3])}. Consider creating a new envelope for better organization.",
+                    'title': "Organize Unassigned Cards",
+                    'description': f"You have {len(unorganized)} unorganized cards with common themes: {', '.join(common_keywords[:3])}. Consider creating envelopes to better organize them.",
+                    'related_card_ids': [c.id for c in unorganized[:5]],
+                    'priority': 'medium'
+                })
+            else:
+                suggestions.append({
+                    'output_type': 'recommendation',
+                    'title': "Organize Your Cards",
+                    'description': f"You have {len(unorganized)} cards without envelopes. Consider grouping related cards into projects or themes.",
                     'related_card_ids': [c.id for c in unorganized[:5]],
                     'priority': 'low'
                 })
         
         # Find similar ideas that could be combined
         ideas = [c for c in cards if c.card_type == "idea"]
-        if len(ideas) > 3:
+        if len(ideas) >= 3:
             # Group by keywords
             keyword_groups = defaultdict(list)
             for idea in ideas:
@@ -190,11 +234,33 @@ class ThinkingAgent:
                 if len(idea_list) >= 3:
                     suggestions.append({
                         'output_type': 'recommendation',
-                        'title': f"Related Ideas About '{keyword}'",
+                        'title': f"Consolidate Ideas About '{keyword}'",
                         'description': f"You have {len(idea_list)} ideas related to '{keyword}'. Consider consolidating them into a project or action plan.",
                         'related_card_ids': [i.id for i in idea_list],
                         'priority': 'medium'
                     })
+        
+        # Check for envelopes with too many cards
+        for envelope in envelopes:
+            if len(envelope.cards) > 10:
+                suggestions.append({
+                    'output_type': 'recommendation',
+                    'title': f"Large Envelope: {envelope.name}",
+                    'description': f"The '{envelope.name}' envelope has {len(envelope.cards)} cards. Consider breaking it into smaller, more focused envelopes.",
+                    'related_card_ids': [c.id for c in envelope.cards[:5]],
+                    'priority': 'low'
+                })
+        
+        # Suggest creating envelope if many tasks without one
+        tasks_without_envelope = [c for c in cards if c.card_type == "task" and not c.envelope_id]
+        if len(tasks_without_envelope) > 5:
+            suggestions.append({
+                'output_type': 'recommendation',
+                'title': "Group Your Tasks",
+                'description': f"You have {len(tasks_without_envelope)} tasks without a project envelope. Organizing them by project can help you stay focused.",
+                'related_card_ids': [t.id for t in tasks_without_envelope[:5]],
+                'priority': 'medium'
+            })
         
         return suggestions
     
@@ -208,7 +274,7 @@ class ThinkingAgent:
             if c.card_type == "task" and c.status == "completed"
         ]
         
-        if len(completed_tasks) >= 10:
+        if len(completed_tasks) >= 5:
             # Calculate average completion time
             completion_times = []
             for task in completed_tasks:
@@ -220,8 +286,8 @@ class ThinkingAgent:
                 avg_time = sum(completion_times) / len(completion_times)
                 suggestions.append({
                     'output_type': 'recommendation',
-                    'title': "Task Completion Pattern",
-                    'description': f"Your average task completion time is {avg_time:.1f} hours. You've completed {len(completed_tasks)} tasks!",
+                    'title': "Task Completion Insights",
+                    'description': f"Great work! You've completed {len(completed_tasks)} tasks with an average completion time of {avg_time:.1f} hours. Keep up the momentum!",
                     'related_card_ids': [],
                     'priority': 'low'
                 })
@@ -232,14 +298,54 @@ class ThinkingAgent:
             if c.priority in ['high', 'urgent'] and c.status == 'active'
         ]
         
-        if len(high_priority) > 5:
+        if len(high_priority) > 3:
             suggestions.append({
                 'output_type': 'recommendation',
                 'title': "High Priority Task Overload",
-                'description': f"You have {len(high_priority)} high/urgent priority tasks. Consider delegating or breaking them into smaller tasks.",
+                'description': f"You have {len(high_priority)} high/urgent priority tasks. Consider breaking them into smaller tasks or delegating some.",
                 'related_card_ids': [t.id for t in high_priority[:5]],
                 'priority': 'high'
             })
+        
+        # Check card type distribution
+        type_counts = defaultdict(int)
+        for card in cards:
+            type_counts[card.card_type] += 1
+        
+        # Too many ideas?
+        if type_counts.get('idea', 0) > 10:
+            suggestions.append({
+                'output_type': 'recommendation',
+                'title': "Ideas to Action",
+                'description': f"You have {type_counts['idea']} ideas stored. Consider converting some of them into actionable tasks to make progress!",
+                'related_card_ids': [c.id for c in cards if c.card_type == 'idea'][:5],
+                'priority': 'medium'
+            })
+        
+        # Check for cards with no dates
+        no_date_tasks = [c for c in cards if c.card_type == 'task' and not c.date and c.status == 'active']
+        if len(no_date_tasks) > 5:
+            suggestions.append({
+                'output_type': 'recommendation',
+                'title': "Add Deadlines to Tasks",
+                'description': f"You have {len(no_date_tasks)} tasks without deadlines. Adding due dates can help with prioritization and time management.",
+                'related_card_ids': [t.id for t in no_date_tasks[:5]],
+                'priority': 'medium'
+            })
+        
+        # Overall productivity insight
+        total_cards = len(cards)
+        if total_cards >= 10:
+            active_ratio = len([c for c in cards if c.status == 'active']) / total_cards
+            
+            if active_ratio > 0.8:
+                suggestions.append({
+                    'output_type': 'recommendation',
+                    'title': "High Activity Level",
+                    'description': f"You're managing {total_cards} cards with {int(active_ratio * 100)}% active. Great job staying organized! Consider completing or archiving finished items.",
+                    'related_card_ids': [],
+                    'priority': 'low'
+                })
         
         return suggestions
     
